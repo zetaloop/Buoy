@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 
 use crate::canvas::{Canvas, H, W};
 
-const KDSETMODE: libc::c_ulong = 0x4b3a;
+const KDSETMODE: libc::Ioctl = 0x4b3a;
 const KD_TEXT: libc::c_ulong = 0;
 const KD_GRAPHICS: libc::c_ulong = 1;
 
