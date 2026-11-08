@@ -41,6 +41,13 @@ impl Canvas {
         }
         x - 1
     }
+
+    pub fn number(&mut self, mut x: i32, y: i32, s: &str) -> i32 {
+        for c in s.chars() {
+            x = self.glyph(x, y, font::digit(c)) + 1;
+        }
+        x - 1
+    }
 }
 
 pub fn text_width(s: &str) -> i32 {
