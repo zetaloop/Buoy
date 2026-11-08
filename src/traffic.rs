@@ -42,6 +42,9 @@ pub struct Traffic {
     /// Target chart scale and how long a smaller one has been wanted.
     pub want: f64,
     low: u32,
+    high: u32,
+    /// Samples since the scale last grew; holds off shrinking right after.
+    age: u32,
     /// Drawn scale, easing toward `want`.
     pub top: f64,
     /// Frames since `want` last changed.
@@ -58,6 +61,30 @@ fn nice(v: f64) -> f64 {
         }
         step *= 10.0;
     }
+}
+
+/// The rung of the 1/2/5 ladder just below `v`.
+fn lower(v: f64) -> f64 {
+    let mut step = 1000.0;
+    loop {
+        for (i, m) in [1.0, 2.0, 5.0].into_iter().enumerate() {
+            if m * step >= v {
+                return if i == 0 {
+                    step / 2.0
+                } else {
+                    [1.0, 2.0, 5.0][i - 1] * step
+                };
+            }
+        }
+        step *= 10.0;
+    }
+}
+
+/// Chart-wide 90th percentile, so a narrow set of tall peaks does not hold the scale up.
+fn p90(down: &[f64], up: &[f64]) -> f64 {
+    let mut v: Vec<f64> = down.iter().chain(up).copied().collect();
+    v.sort_by(f64::total_cmp);
+    v[v.len() * 9 / 10]
 }
 
 fn yday() -> i32 {
@@ -85,6 +112,8 @@ impl Traffic {
             readers: [reader(), reader()],
             want: 1000.0,
             low: 0,
+            high: 0,
+            age: 0,
             top: 1000.0,
             changed: 0,
         }
@@ -115,41 +144,39 @@ impl Traffic {
     }
 
     fn retarget(&mut self) {
-        // weighted p90: the oldest quarter fades from weight 1 to 0.3
-        let q = (W / 4) as f64;
-        let mut pairs: Vec<(f64, f64)> = (0..W)
-            .flat_map(|i| {
-                [self.down[i], self.up[i]].map(|v| (v, 0.3 + 0.7 * (i as f64 / q).min(1.0)))
-            })
-            .collect();
-        pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let total: f64 = pairs.iter().map(|p| p.1).sum();
-        let mut acc = 0.0;
-        let mut v = 0.0;
-        for (x, w) in pairs {
-            acc += w;
-            v = x;
-            if acc >= total * 0.9 {
-                break;
+        self.age += 1;
+        // only traffic that lasts 2.5 s sets the scale, so a page burst stays
+        // clipped instead of rescaling the chart and back
+        let n = (RATE * 5 / 2) as usize;
+        let steady = (W - n..W).fold(f64::INFINITY, |a, i| a.min(self.down[i].max(self.up[i])));
+        let need = nice((steady * 1.6).max(200e3));
+        // the history keeps the scale up while a large part of the visible chart
+        // still has something to look at; the newest samples alone decide growth
+        let hist = nice((p90(&self.down, &self.up) * 1.6).max(200e3));
+        // a dead band either side of the current scale keeps traffic that hovers
+        // near a rung from flapping between two of them
+        if need > self.want * 1.25 {
+            // a sustained transfer still opens up within a second, a burst of
+            // requests that briefly pushes the same band does not
+            self.high += 1;
+            if self.high > RATE / 2 {
+                (self.want, self.low, self.high, self.changed) = (need, 0, 0, 0);
+                self.age = 0;
             }
-        }
-        v *= 1.3;
-        // a sustained climb (1.5 s all above scale, still rising) expands at once
-        let recent: Vec<f64> = (W - 6..W).map(|i| self.down[i].max(self.up[i])).collect();
-        if recent.iter().all(|&r| r > self.want) && recent[5] >= recent[0] {
-            v = v.max(recent[5] * 1.3);
-        }
-        // soft floor keeps background traffic low in the chart
-        let want = nice((v * v + 200e3 * 200e3).sqrt());
-        if want > self.want {
-            (self.want, self.low, self.changed) = (want, 0, 0);
-        } else if want < self.want {
+        } else if need < self.want / 1.5 && hist < self.want / 1.5 && self.age > RATE * 4 {
+            // a scale that just grew should stay put long enough to be read
             self.low += 1;
-            if self.low > RATE * 3 {
-                (self.want, self.low, self.changed) = (want, 0, 0);
+            if self.low > RATE / 2 {
+                // a scale that just grew is still being read: step it down slowly
+                let from = if hist < self.want / 4.0 && self.age > RATE * 8 {
+                    need
+                } else {
+                    lower(self.want)
+                };
+                (self.want, self.low, self.changed) = (from.max(need), 0, 0);
             }
         } else {
-            self.low = 0;
+            (self.low, self.high) = (0, 0);
         }
     }
 
