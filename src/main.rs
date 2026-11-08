@@ -15,6 +15,7 @@ use display::Display;
 use traffic::{RATE, Traffic};
 
 const FPS: u32 = 20;
+const PHASE_SECONDS: u64 = 300;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -54,7 +55,14 @@ fn reading(c: &mut Canvas, x: i32, v: f64, mark: font::Glyph) {
     c.glyph(e + 1, 3, font::unit(unit));
 }
 
-fn header(c: &mut Canvas, t: &Traffic) {
+/// Horizontal positions the text rows cycle through.
+fn shift(phase: u32) -> i32 {
+    // a gap in the sequence keeps any 3 px wide glyph column from staying lit
+    [0, 1, 3, 2, 1, 0][phase as usize % 6]
+}
+
+fn header(c: &mut Canvas, t: &Traffic, phase: u32) {
+    let shift = shift(phase);
     // mark, gap, three digits, decimal point, gap, unit
     const SLOT: i32 = 3 + 2 + 3 * 5 + 4 + 1 + 4;
     let gap = (W as i32 - SLOT * 3) as f32 / 4.0;
@@ -69,41 +77,43 @@ fn header(c: &mut Canvas, t: &Traffic) {
     {
         reading(
             c,
-            (gap + i as f32 * (SLOT as f32 + gap)).round() as i32,
+            (gap + i as f32 * (SLOT as f32 + gap)).round() as i32 + shift,
             v,
             mark,
         );
     }
 }
 
-fn chart(c: &mut Canvas, t: &Traffic) {
-    const MID: i32 = 32;
-    const HALF: i32 = 22;
+fn chart(c: &mut Canvas, t: &Traffic, phase: u32) {
+    // the whole plot rides between two rows so the divider is not pinned to one
+    let dy = (phase as i32 / 2) % 2;
+    let mid = 31 - dy;
+    let half = mid - 10;
+    let top = 8 - dy;
     for (i, (&u, &d)) in t.up.iter().zip(&t.down).enumerate() {
         let x = i as i32;
-        let bar = |v: f64| ((v / t.top * f64::from(HALF)).round() as i32).min(HALF);
-        c.rect(x, MID - bar(u), 1, bar(u), true);
-        c.rect(x, MID + 1, 1, bar(d), true);
-        // clipped peaks get a notch at the edge
+        let bar = |v: f64| ((v / t.top * f64::from(half)).round() as i32).min(half);
+        c.rect(x, mid - bar(u), 1, bar(u), true);
+        c.rect(x, mid + 1, 1, bar(d), true);
         if u > t.top {
-            c.rect(x, MID - HALF, 1, 2, false);
+            c.rect(x, top, 1, 2, false);
         }
         if d > t.top {
-            c.rect(x, MID + HALF - 1, 1, 2, false);
+            c.rect(x, mid + half - 1, 1, 2, false);
         }
     }
-    c.rect(0, MID, W as i32, 1, true);
+    // the row swap above already rests each divider row half the time
+    c.rect(0, mid, W as i32, 1, true);
     if t.changed < 2 * FPS {
         let (n, unit) = split(t.want);
         let label = format!("{}{unit}", n.split('.').next().unwrap_or_default());
         let x = W as i32 - text_width(&label) - 2;
-        c.rect(x - 2, MID + HALF - 7, text_width(&label) + 4, 8, false);
-        c.text(x, MID + HALF - 5, &label);
+        c.rect(x - 2, mid + half - 7, text_width(&label) + 4, 8, false);
+        c.text(x, mid + half - 5, &label);
     }
 }
 
-fn footer(c: &mut Canvas, s: &Status) {
-    c.rect(0, 56, W as i32, 1, true);
+fn footer(c: &mut Canvas, s: &Status, phase: u32) {
     let show = |v: Option<u32>| v.map_or("-".into(), |v| v.to_string());
     let items = [
         ("CPU", s.cpu.to_string()),
@@ -116,7 +126,7 @@ fn footer(c: &mut Canvas, s: &Status) {
         .map(|(l, v)| text_width(l) + 4 + text_width(v))
         .collect();
     let gap = (W as i32 - widths.iter().sum::<i32>()) as f32 / (items.len() + 1) as f32;
-    let mut x = gap;
+    let mut x = gap + shift(phase) as f32;
     for ((label, value), w) in items.iter().zip(widths) {
         let e = c.text(x.round() as i32, H as i32 - 6, label);
         c.text(e + 4, H as i32 - 6, value);
@@ -151,6 +161,8 @@ fn main() -> io::Result<()> {
             traffic.sample(frame as f64 / f64::from(FPS), rx, tx);
         }
         traffic.frame();
+        // shift the layout once every few minutes so no pixel stays lit for long
+        let phase = (frame / (u64::from(FPS) * PHASE_SECONDS)) as u32;
         if frame.is_multiple_of(u64::from(FPS)) {
             status = Status {
                 cpu: cpu.usage()?,
@@ -160,9 +172,9 @@ fn main() -> io::Result<()> {
             };
         }
         canvas.clear();
-        header(&mut canvas, &traffic);
-        chart(&mut canvas, &traffic);
-        footer(&mut canvas, &status);
+        header(&mut canvas, &traffic, phase);
+        chart(&mut canvas, &traffic, phase);
+        footer(&mut canvas, &status, phase);
         display.show(&canvas);
         let next = start + Duration::from_secs(frame) / FPS;
         thread::sleep(next.saturating_duration_since(Instant::now()));
