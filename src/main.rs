@@ -87,9 +87,9 @@ fn header(c: &mut Canvas, t: &Traffic, phase: u32) {
 fn chart(c: &mut Canvas, t: &Traffic, phase: u32) {
     // the whole plot rides between two rows so the divider is not pinned to one
     let dy = (phase as i32 / 2) % 2;
-    let mid = 31 - dy;
-    let half = mid - 10;
-    let top = 8 - dy;
+    let mid = 32 - dy;
+    let half = 22;
+    let top = mid - half;
     for (i, (&u, &d)) in t.up.iter().zip(&t.down).enumerate() {
         let x = i as i32;
         let bar = |v: f64| ((v / t.top * f64::from(half)).round() as i32).min(half);
@@ -128,8 +128,8 @@ fn footer(c: &mut Canvas, s: &Status, phase: u32) {
     let gap = (W as i32 - widths.iter().sum::<i32>()) as f32 / (items.len() + 1) as f32;
     let mut x = gap + shift(phase) as f32;
     for ((label, value), w) in items.iter().zip(widths) {
-        let e = c.text(x.round() as i32, H as i32 - 6, label);
-        c.text(e + 4, H as i32 - 6, value);
+        let e = c.text(x.round() as i32, H as i32 - 7, label);
+        c.text(e + 4, H as i32 - 7, value);
         x += w as f32 + gap;
     }
 }
